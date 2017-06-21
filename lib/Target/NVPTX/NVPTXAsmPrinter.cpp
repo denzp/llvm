@@ -392,7 +392,7 @@ void NVPTXAsmPrinter::printReturnValStr(const Function *F, raw_ostream &O) {
   O << " (";
 
   if (isABI) {
-    if (Ty->isFloatingPointTy() || Ty->isIntegerTy()) {
+    if ((Ty->isFloatingPointTy() || Ty->isIntegerTy()) && !Ty->isIntegerTy(128)) {
       unsigned size = 0;
       if (auto *ITy = dyn_cast<IntegerType>(Ty)) {
         size = ITy->getBitWidth();
@@ -407,7 +407,7 @@ void NVPTXAsmPrinter::printReturnValStr(const Function *F, raw_ostream &O) {
     } else if (isa<PointerType>(Ty)) {
       O << ".param .b" << TLI->getPointerTy(DL).getSizeInBits()
         << " func_retval0";
-    } else if (Ty->isAggregateType() || Ty->isVectorTy()) {
+    } else if (Ty->isAggregateType() || Ty->isVectorTy() || Ty->isIntegerTy(128)) {
       unsigned totalsz = DL.getTypeAllocSize(Ty);
       unsigned retAlignment = 0;
       if (!getAlign(*F, 0, retAlignment))
@@ -1409,6 +1409,14 @@ void NVPTXAsmPrinter::emitPTXGlobalVariable(const GlobalVariable *GVar,
   else
     O << " .align " << GVar->getAlignment();
 
+  // Special case for I128
+  if (ETy->isIntegerTy(128)) {
+    O << " .b8 ";
+    getSymbol(GVar)->print(O, MAI);
+    O << "[16]";
+    return;
+  }
+
   if (ETy->isFloatingPointTy() || ETy->isIntegerTy() || ETy->isPointerTy()) {
     O << " .";
     O << getPTXFundamentalTypeStr(ETy);
@@ -1535,7 +1543,7 @@ void NVPTXAsmPrinter::emitFunctionParamList(const Function *F, raw_ostream &O) {
     }
 
     if (!PAL.hasAttribute(paramIndex + 1, Attribute::ByVal)) {
-      if (Ty->isAggregateType() || Ty->isVectorTy()) {
+      if (Ty->isAggregateType() || Ty->isVectorTy() || Ty->isIntegerTy(128)) {
         // Just print .param .align <a> .b8 .param[size];
         // <a> = PAL.getparamalignment
         // size = typeallocsize of element type

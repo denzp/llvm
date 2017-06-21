@@ -112,6 +112,19 @@ static void ComputePTXValueVTs(const TargetLowering &TLI, const DataLayout &DL,
   SmallVector<EVT, 16> TempVTs;
   SmallVector<uint64_t, 16> TempOffsets;
 
+  // Special case for I128 - decompose to (I64, I64)
+  if (Ty->isIntegerTy(128)){
+    ValueVTs.push_back(EVT(MVT::i64));
+    ValueVTs.push_back(EVT(MVT::i64));
+
+    if (Offsets) {
+      Offsets->push_back(StartingOffset + 0);
+      Offsets->push_back(StartingOffset + 8);
+    }
+
+    return;
+  }
+
   ComputeValueVTs(TLI, DL, Ty, TempVTs, &TempOffsets, StartingOffset);
   for (unsigned i = 0, e = TempVTs.size(); i != e; ++i) {
     EVT VT = TempVTs[i];
@@ -963,7 +976,7 @@ std::string NVPTXTargetLowering::getPrototype(
     O << "()";
   } else {
     O << "(";
-    if (retTy->isFloatingPointTy() || retTy->isIntegerTy()) {
+    if ((retTy->isFloatingPointTy() || retTy->isIntegerTy()) && !retTy->isIntegerTy(128)) {
       unsigned size = 0;
       if (auto *ITy = dyn_cast<IntegerType>(retTy)) {
         size = ITy->getBitWidth();
@@ -979,7 +992,7 @@ std::string NVPTXTargetLowering::getPrototype(
     } else if (isa<PointerType>(retTy)) {
       O << ".param .b" << PtrVT.getSizeInBits() << " _";
     } else if ((retTy->getTypeID() == Type::StructTyID) ||
-               isa<VectorType>(retTy)) {
+               isa<VectorType>(retTy) || retTy->isIntegerTy(128)) {
       auto &DL = CS->getCalledFunction()->getParent()->getDataLayout();
       O << ".param .align " << retAlignment << " .b8 _["
         << DL.getTypeAllocSize(retTy) << "]";
@@ -1001,7 +1014,7 @@ std::string NVPTXTargetLowering::getPrototype(
     first = false;
 
     if (!Outs[OIdx].Flags.isByVal()) {
-      if (Ty->isAggregateType() || Ty->isVectorTy()) {
+      if (Ty->isAggregateType() || Ty->isVectorTy() || Ty->isIntegerTy(128)) {
         unsigned align = 0;
         const CallInst *CallI = cast<CallInst>(CS->getInstruction());
         // +1 because index 0 is reserved for return type alignment
@@ -1148,7 +1161,7 @@ SDValue NVPTXTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     Type *Ty = Args[i].Ty;
 
     if (!Outs[OIdx].Flags.isByVal()) {
-      if (Ty->isAggregateType()) {
+      if (Ty->isAggregateType() || Ty->isIntegerTy(128)) {
         // aggregate
         SmallVector<EVT, 16> vtparts;
         SmallVector<uint64_t, 16> Offsets;
@@ -1444,8 +1457,8 @@ SDValue NVPTXTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     // these three types to match the logic in
     // NVPTXAsmPrinter::printReturnValStr and NVPTXTargetLowering::getPrototype.
     // Plus, this behavior is consistent with nvcc's.
-    if (retTy->isFloatingPointTy() || retTy->isIntegerTy() ||
-        retTy->isPointerTy()) {
+    if ((retTy->isFloatingPointTy() || retTy->isIntegerTy() ||
+        retTy->isPointerTy()) && !retTy->isIntegerTy(128)) {
       // Scalar needs to be at least 32bit wide
       if (resultsz < 32)
         resultsz = 32;
@@ -2167,7 +2180,7 @@ SDValue NVPTXTargetLowering::LowerFormalArguments(
 
     if (theArgs[i]->use_empty()) {
       // argument is dead
-      if (Ty->isAggregateType()) {
+      if (Ty->isAggregateType() || Ty->isIntegerTy(128)) {
         SmallVector<EVT, 16> vtparts;
 
         ComputePTXValueVTs(*this, DAG.getDataLayout(), Ty, vtparts);
@@ -2201,7 +2214,7 @@ SDValue NVPTXTargetLowering::LowerFormalArguments(
     // appear in the same order as their order of appearance
     // in the original function. "idx+1" holds that order.
     if (!PAL.hasAttribute(i + 1, Attribute::ByVal)) {
-      if (Ty->isAggregateType()) {
+      if (Ty->isAggregateType() || Ty->isIntegerTy(128)) {
         SmallVector<EVT, 16> vtparts;
         SmallVector<uint64_t, 16> offsets;
 
