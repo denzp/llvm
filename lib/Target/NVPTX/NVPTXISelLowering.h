@@ -541,6 +541,8 @@ private:
   unsigned getArgumentAlignment(SDValue Callee, const ImmutableCallSite *CS,
                                 Type *Ty, unsigned Idx,
                                 const DataLayout &DL) const;
+
+  SDValue LowerExternalSymbol(SDValue Op, SelectionDAG &DAG) const;
 };
 } // namespace llvm
 

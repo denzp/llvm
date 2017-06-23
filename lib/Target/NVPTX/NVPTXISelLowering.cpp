@@ -337,6 +337,14 @@ NVPTXTargetLowering::NVPTXTargetLowering(const NVPTXTargetMachine &TM,
   setOperationAction(ISD::FMAXNUM, MVT::f32, Legal);
   setOperationAction(ISD::FMAXNUM, MVT::f64, Legal);
 
+  // Expand ExternalSymbol into TargetExternalSymbol
+  if (TM.is64Bit()) {
+    setOperationAction(ISD::ExternalSymbol, MVT::i64, Custom);
+  }
+  else {
+    setOperationAction(ISD::ExternalSymbol, MVT::i32, Custom);
+  }
+
   // No FEXP2, FLOG2.  The PTX ex2 and log2 functions are always approximate.
   // No FPOW or FREM in PTX.
 
@@ -993,7 +1001,8 @@ std::string NVPTXTargetLowering::getPrototype(
       O << ".param .b" << PtrVT.getSizeInBits() << " _";
     } else if ((retTy->getTypeID() == Type::StructTyID) ||
                isa<VectorType>(retTy) || retTy->isIntegerTy(128)) {
-      auto &DL = CS->getCalledFunction()->getParent()->getDataLayout();
+      // We already know the data layout.
+      // auto &DL = CS->getCalledFunction()->getParent()->getDataLayout();
       O << ".param .align " << retAlignment << " .b8 _["
         << DL.getTypeAllocSize(retTy) << "]";
     } else {
@@ -1016,10 +1025,16 @@ std::string NVPTXTargetLowering::getPrototype(
     if (!Outs[OIdx].Flags.isByVal()) {
       if (Ty->isAggregateType() || Ty->isVectorTy() || Ty->isIntegerTy(128)) {
         unsigned align = 0;
-        const CallInst *CallI = cast<CallInst>(CS->getInstruction());
-        // +1 because index 0 is reserved for return type alignment
-        if (!getAlign(*CallI, i + 1, align))
+        // Call site is empty for libcall.
+        if (CS) {
+          const CallInst *CallI = cast<CallInst>(CS->getInstruction());
+          // +1 because index 0 is reserved for return type alignment
+          if (!getAlign(*CallI, i + 1, align))
+            align = DL.getABITypeAlignment(Ty);
+        }
+        else {
           align = DL.getABITypeAlignment(Ty);
+        }
         unsigned sz = DL.getTypeAllocSize(Ty);
         O << ".param .align " << align << " .b8 ";
         O << "_";
@@ -1482,7 +1497,8 @@ SDValue NVPTXTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     }
   }
 
-  if (!Func) {
+  // Libcalls doesn't have call site and but it still NOT indirect calls.
+  if (!Func && CS) {
     // This is indirect function call case : PTX requires a prototype of the
     // form
     // proto_0 : .callprototype(.param .b32 _) _ (.param .b32 _);
@@ -1546,7 +1562,7 @@ SDValue NVPTXTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   Chain = DAG.getNode(NVPTXISD::CallArgEnd, dl, CallArgEndVTs, CallArgEndOps);
   InFlag = Chain.getValue(1);
 
-  if (!Func) {
+  if (!Func && CS) {
     SDVTList PrototypeVTs = DAG.getVTList(MVT::Other, MVT::Glue);
     SDValue PrototypeOps[] = { Chain,
                                DAG.getConstant(uniqueCallSite, dl, MVT::i32),
@@ -1740,6 +1756,8 @@ SDValue NVPTXTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   // set isTailCall to false for now, until we figure out how to express
   // tail call optimization in PTX
   isTailCall = false;
+
+  DAG.setRoot(Chain);
   return Chain;
 }
 
@@ -1913,9 +1931,19 @@ NVPTXTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
     return LowerShiftRightParts(Op, DAG);
   case ISD::SELECT:
     return LowerSelect(Op, DAG);
+  case ISD::ExternalSymbol:
+    return LowerExternalSymbol(Op, DAG);
   default:
     llvm_unreachable("Custom lowering not defined for operation");
   }
+}
+
+SDValue NVPTXTargetLowering::LowerExternalSymbol(SDValue Op,
+                                                 SelectionDAG &DAG) const {
+  auto *Symbol = cast<ExternalSymbolSDNode>(Op)->getSymbol();
+  auto PtrVT = getPointerTy(DAG.getDataLayout());
+
+  return DAG.getTargetExternalSymbol(Symbol, PtrVT);
 }
 
 SDValue NVPTXTargetLowering::LowerSelect(SDValue Op, SelectionDAG &DAG) const {
